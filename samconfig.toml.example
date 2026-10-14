@@ -1,0 +1,21 @@
+version = 0.1
+
+[default]
+[default.global]
+[default.global.parameters]
+stack_name = "docustream-web-stack"
+
+[default.build]
+[default.build.parameters]
+cached = true
+parallel = true
+
+[default.deploy]
+[default.deploy.parameters]
+capabilities = "CAPABILITY_IAM CAPABILITY_NAMED_IAM"
+confirm_changeset = false
+no_fail_on_empty_changeset = true
+resolve_s3 = true
+region = "us-east-1"
+
+parameter_overrides = "Environment=\"prod\" MaxStorageBytes=104857600 MaxFileBytes=20971520"

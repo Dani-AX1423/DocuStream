@@ -1,0 +1,252 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  DocuStream Web - Production-Ready Serverless Document Processing Platform
+  AWS SAM Infrastructure: S3, DynamoDB, API Gateway, and Python 3.11 Lambda functions
+  with AWS Textract and automated Regex metadata extraction.
+
+Parameters:
+  Environment:
+    Type: String
+    Default: prod
+    AllowedValues:
+      - dev
+      - staging
+      - prod
+    Description: Deployment target environment
+  MaxStorageBytes:
+    Type: Number
+    Default: 104857600
+    Description: Max storage quota per user in bytes (Default 100 MB)
+  MaxFileBytes:
+    Type: Number
+    Default: 20971520
+    Description: Max allowed size per single file upload in bytes (Default 20 MB)
+
+Globals:
+  Function:
+    Timeout: 30
+    MemorySize: 256
+    Runtime: python3.11
+    Architectures:
+      - x86_64
+    Environment:
+      Variables:
+        DOCUSTREAM_TABLE: !Ref DocuStreamTable
+        S3_BUCKET_NAME: !Sub 'docustream-web-storage-${AWS::AccountId}-${AWS::Region}'
+        MAX_STORAGE_BYTES: !Ref MaxStorageBytes
+        MAX_FILE_BYTES: !Ref MaxFileBytes
+        ENVIRONMENT: !Ref Environment
+
+Resources:
+  # ============================================================================
+  # DYNAMODB TABLE: DocuStreamData
+  # ============================================================================
+  DocuStreamTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: DocuStreamData
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: partition_key
+          AttributeType: S
+        - AttributeName: sort_key
+          AttributeType: S
+      KeySchema:
+        - AttributeName: partition_key
+          KeyType: HASH
+        - AttributeName: sort_key
+          KeyType: RANGE
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
+      SSESpecification:
+        SSEEnabled: true
+      Tags:
+        - Key: Project
+          Value: DocuStreamWeb
+        - Key: Environment
+          Value: !Ref Environment
+
+  # ============================================================================
+  # S3 BUCKET: docustream-web-storage-<ACCOUNT_ID>-<REGION>
+  # Configured with NotificationConfiguration and DependsOn DocumentProcessorPermission
+  # ============================================================================
+  DocuStreamBucket:
+    Type: AWS::S3::Bucket
+    DependsOn: DocumentProcessorPermission
+    Properties:
+      BucketName: !Sub 'docustream-web-storage-${AWS::AccountId}-${AWS::Region}'
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      CorsConfiguration:
+        CorsRules:
+          - AllowedHeaders:
+              - '*'
+            AllowedMethods:
+              - GET
+              - PUT
+              - POST
+              - HEAD
+            AllowedOrigins:
+              - 'http://localhost:3000'
+              - 'https://*.vercel.app'
+            ExposedHeaders:
+              - ETag
+              - x-amz-server-side-encryption
+              - x-amz-request-id
+            MaxAge: 3600
+      NotificationConfiguration:
+        LambdaConfigurations:
+          - Event: 's3:ObjectCreated:*'
+            Function: !GetAtt DocumentProcessorFunction.Arn
+            Filter:
+              S3Key:
+                Rules:
+                  - Name: prefix
+                    Value: uploads/
+      Tags:
+        - Key: Project
+          Value: DocuStreamWeb
+        - Key: Environment
+          Value: !Ref Environment
+
+  # ============================================================================
+  # LAMBDA PERMISSION FOR S3 (Breaks Circular Dependency via String ARN)
+  # ============================================================================
+  DocumentProcessorPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref DocumentProcessorFunction
+      Principal: s3.amazonaws.com
+      SourceArn: !Sub 'arn:aws:s3:::docustream-web-storage-${AWS::AccountId}-${AWS::Region}'
+      SourceAccount: !Ref AWS::AccountId
+
+  # ============================================================================
+  # API GATEWAY REST API
+  # ============================================================================
+  DocuStreamApi:
+    Type: AWS::Serverless::Api
+    Properties:
+      StageName: !Ref Environment
+      EndpointConfiguration:
+        Type: REGIONAL
+      Cors:
+        AllowMethods: "'GET,POST,PUT,DELETE,OPTIONS'"
+        AllowHeaders: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token,X-User-Id'"
+        AllowOrigin: "'*'"
+        MaxAge: "'3600'"
+
+  # ============================================================================
+  # LAMBDA 1: PresignedUrlFunction
+  # ============================================================================
+  PresignedUrlFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Description: Validates storage quota and generates S3 presigned PUT URL
+      CodeUri: src/
+      Handler: get_presigned_url.handler
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref DocuStreamTable
+        - S3CrudPolicy:
+            BucketName: !Sub 'docustream-web-storage-${AWS::AccountId}-${AWS::Region}'
+      Events:
+        GetUploadUrl:
+          Type: Api
+          Properties:
+            RestApiId: !Ref DocuStreamApi
+            Path: /api/upload-url
+            Method: get
+
+  # ============================================================================
+  # LAMBDA 2: DocumentProcessorFunction
+  # (Triggered directly via DocuStreamBucket NotificationConfiguration)
+  # ============================================================================
+  DocumentProcessorFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Description: S3 trigger executing Textract, Regex extraction, and DynamoDB persistence
+      CodeUri: src/
+      Handler: process_document.handler
+      Timeout: 90
+      MemorySize: 512
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref DocuStreamTable
+        - S3ReadPolicy:
+            BucketName: !Sub 'docustream-web-storage-${AWS::AccountId}-${AWS::Region}'
+        - Statement:
+            - Effect: Allow
+              Action:
+                - textract:DetectDocumentText
+              Resource: '*'
+
+  # ============================================================================
+  # LAMBDA 3: DocumentListFunction
+  # ============================================================================
+  DocumentListFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Description: Fetches processed documents and user quota metrics
+      CodeUri: src/
+      Handler: list_documents.handler
+      Policies:
+        - DynamoDBReadPolicy:
+            TableName: !Ref DocuStreamTable
+        - S3ReadPolicy:
+            BucketName: !Sub 'docustream-web-storage-${AWS::AccountId}-${AWS::Region}'
+      Events:
+
+        ListDocuments:
+          Type: Api
+          Properties:
+            RestApiId: !Ref DocuStreamApi
+            Path: /api/documents
+            Method: get
+
+  # ============================================================================
+  # LAMBDA 4: DocumentDeleteFunction
+  # ============================================================================
+  DocumentDeleteFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Description: Deletes document from S3 and DynamoDB and restores user storage quota
+      CodeUri: src/
+      Handler: delete_document.handler
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref DocuStreamTable
+        - S3CrudPolicy:
+            BucketName: !Sub 'docustream-web-storage-${AWS::AccountId}-${AWS::Region}'
+      Events:
+        DeleteDocument:
+          Type: Api
+          Properties:
+            RestApiId: !Ref DocuStreamApi
+            Path: /api/documents/{docId}
+            Method: delete
+
+Outputs:
+  ApiGatewayEndpoint:
+    Description: Base API Gateway URL for DocuStream API
+    Value: !Sub 'https://${DocuStreamApi}.execute-api.${AWS::Region}.amazonaws.com/${Environment}'
+    Export:
+      Name: DocuStreamApiEndpoint
+  S3BucketName:
+    Description: S3 Bucket Name for document uploads
+    Value: !Ref DocuStreamBucket
+    Export:
+      Name: DocuStreamBucketName
+  DynamoDBTableName:
+    Description: DynamoDB Table Name for document records and metrics
+    Value: !Ref DocuStreamTable
+    Export:
+      Name: DocuStreamTableName

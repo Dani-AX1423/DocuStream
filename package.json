@@ -1,0 +1,25 @@
+{
+  "name": "docustream-web-monorepo",
+  "version": "1.0.0",
+  "description": "Production Serverless Document Processing Platform (Next.js + AWS SAM)",
+  "private": true,
+  "scripts": {
+    "dev": "npm --prefix frontend run dev",
+    "build": "npm --prefix frontend run build",
+    "start": "npm --prefix frontend run start",
+    "lint": "npm --prefix frontend run lint",
+    "test:backend": ".venv/bin/pytest tests/test_backend.py -v",
+    "deploy:backend": "./deploy_backend.sh",
+    "deploy:frontend": "./deploy_frontend.sh"
+  },
+  "keywords": [
+    "serverless",
+    "nextjs",
+    "aws-sam",
+    "textract",
+    "dynamodb",
+    "s3"
+  ],
+  "author": "DocuStream Team",
+  "license": "MIT"
+}
