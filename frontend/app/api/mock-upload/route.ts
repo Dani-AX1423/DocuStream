@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { store } from "../mockData";
 
 export async function PUT(request: NextRequest) {
-  const { searchParams } = new URL(request.url);
+  const { searchParams } = request.nextUrl;
   const docId = searchParams.get("docId");
   const userId = searchParams.get("userId") || "user-demo-1";
   const fileName = searchParams.get("name") || "document.pdf";

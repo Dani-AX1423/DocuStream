@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { store } from "../mockData";
 
 export async function GET(request: NextRequest) {
-  const { searchParams } = new URL(request.url);
+  const { searchParams } = request.nextUrl;
   const fileName = searchParams.get("fileName");
   const fileSizeStr = searchParams.get("fileSize");
   const contentType = searchParams.get("contentType") || "application/octet-stream";

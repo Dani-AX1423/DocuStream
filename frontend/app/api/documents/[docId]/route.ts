@@ -6,7 +6,7 @@ export async function DELETE(
   { params }: { params: { docId: string } }
 ) {
   const { docId } = params;
-  const { searchParams } = new URL(request.url);
+  const { searchParams } = request.nextUrl;
   const userId = searchParams.get("userId") || "user-demo-1";
 
   const userDocs = store.documents[userId] || [];

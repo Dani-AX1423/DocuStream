@@ -2,16 +2,80 @@ import axios from "axios";
 import { DocumentItem, DocumentListResponse, UploadUrlResponse } from "./types";
 
 /**
+ * Default AWS API Gateway endpoint deployed via AWS SAM
+ */
+export const DEFAULT_API_GATEWAY_URL =
+  "https://z64eg2zv9a.execute-api.us-east-1.amazonaws.com/prod";
+
+/**
  * Dynamically resolves the base URL for API Gateway.
- * Strips trailing slashes and falls back to empty string (relative path)
- * for local Edge mock routes if NEXT_PUBLIC_API_GATEWAY_URL is not provided.
+ * Strips trailing slashes, sanitizes malformed inputs (e.g. accidental markdown links or placeholder brackets),
+ * and validates that the URL is a syntactically valid HTTP/HTTPS endpoint.
  */
 export function getApiBaseUrl(): string {
-  const envUrl = process.env.NEXT_PUBLIC_API_GATEWAY_URL;
-  if (envUrl && typeof envUrl === "string" && envUrl.trim().length > 0) {
-    return envUrl.trim().replace(/\/+$/, "");
+  let envUrl = process.env.NEXT_PUBLIC_API_GATEWAY_URL;
+
+  // If environment variable is missing or empty, use the deployed AWS backend endpoint
+  if (!envUrl || typeof envUrl !== "string" || envUrl.trim().length === 0) {
+    return DEFAULT_API_GATEWAY_URL;
   }
-  return "";
+
+  let cleaned = envUrl.trim();
+
+  // If explicitly configured for local Edge mock mode
+  if (
+    cleaned.toLowerCase() === "mock" ||
+    cleaned.toLowerCase() === "local" ||
+    cleaned.toLowerCase() === "none"
+  ) {
+    return "";
+  }
+
+  // Check if it contains placeholder tokens like '<your-api-id>' or 'your-api-gateway-id'
+  const isPlaceholder =
+    cleaned.includes("<") ||
+    cleaned.includes(">") ||
+    cleaned.includes("your-api-id") ||
+    cleaned.includes("your-api-gateway-id") ||
+    cleaned.includes("xxxxxx") ||
+    cleaned.includes("example.com");
+
+  if (isPlaceholder) {
+    console.warn(
+      `DocuStream: NEXT_PUBLIC_API_GATEWAY_URL "${envUrl}" appears to be a placeholder. Falling back to deployed endpoint.`
+    );
+    return DEFAULT_API_GATEWAY_URL;
+  }
+
+  // Handle accidental markdown link pasting: e.g. [https://...](https://...) or https://...[...](https://...)
+  const markdownMatch = cleaned.match(/\((https?:\/\/[^\s)]+)\)/);
+  if (markdownMatch && markdownMatch[1]) {
+    cleaned = markdownMatch[1];
+  } else {
+    cleaned = cleaned.replace(/^\[+/, "").replace(/\]+$/, "");
+  }
+
+  cleaned = cleaned.replace(/\/+$/, "");
+
+  // Validate syntax with WHATWG URL parser
+  try {
+    const parsed = new URL(cleaned);
+    if (
+      (parsed.protocol === "http:" || parsed.protocol === "https:") &&
+      parsed.hostname &&
+      !parsed.hostname.startsWith(".") &&
+      parsed.hostname.includes(".")
+    ) {
+      return cleaned;
+    }
+  } catch (err) {
+    console.warn(
+      `DocuStream: NEXT_PUBLIC_API_GATEWAY_URL "${envUrl}" is not a valid URL. Falling back to deployed endpoint.`
+    );
+    return DEFAULT_API_GATEWAY_URL;
+  }
+
+  return DEFAULT_API_GATEWAY_URL;
 }
 
 export const API_BASE_URL = getApiBaseUrl();
